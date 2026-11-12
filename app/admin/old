@@ -1,0 +1,1489 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
+import { supabase } from "@/lib/supabase";
+
+type Product = {
+  id: number;
+  name: string;
+  category: string;
+  subcategory: string;
+  description: string;
+  costPrice: number;
+  stock: number;
+  price: number;
+  images: string[];
+};
+
+type OrderItem = {
+  productId: number;
+  name: string;
+  quantity: number;
+  costPrice: number;
+  price: number;
+};
+
+type Order = {
+  id: number;
+  customerName: string;
+  phone: string;
+  address: string;
+  items: OrderItem[];
+  total: number;
+  profit: number;
+  paymentMethod: string;
+  paymentStatus: string;
+  orderStatus: string;
+  receipt: string;
+  createdAt: string;
+};
+
+type PaymentMethod = {
+  id: string;
+  label: string;
+  account_details: string;
+  enabled: boolean;
+};
+
+type AdminProductCost = {
+  product_id: number | string;
+  cost_price: number | string;
+};
+
+type StoreCategory = { name: string; image: string; subcategories: Array<{ name: string; image: string }> };
+
+type StoreContent = {
+  homepage_sections: { published: boolean; enabled: boolean; categories: StoreCategory[]; [key: string]: any };
+  top_bar: { published: boolean; enabled: boolean; text: string; background: string; text_color: string };
+  hero_banner: { published: boolean; enabled: boolean; title: string; description: string; image: string; images: string[]; button_text: string; button_link: string };
+  promotions: { published: boolean; enabled: boolean; items: Array<{ title: string; description?: string }> };
+  about: { published: boolean; enabled: boolean; title: string; description: string };
+  footer: { published: boolean; enabled: boolean; description: string; whatsapp_number: string; instagram_url: string; tiktok_url: string };
+};
+
+const DEFAULT_CATEGORIES: StoreCategory[] = [
+  { name: "إلكترونيات", image: "https://images.unsplash.com/photo-1498049794561-7780e7231661?auto=format&fit=crop&w=900&q=85", subcategories: [{ name: "موبايلات", image: "" }, { name: "سماعات", image: "" }, { name: "إكسسوارات موبايل", image: "" }] },
+  { name: "أزياء", image: "https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=900&q=85", subcategories: [{ name: "ملابس", image: "" }, { name: "شنط", image: "" }, { name: "أحذية", image: "" }] },
+  { name: "المنزل", image: "https://images.unsplash.com/photo-1616486338812-3dadae4b4ace?auto=format&fit=crop&w=900&q=85", subcategories: [{ name: "ديكور", image: "" }, { name: "أدوات منزلية", image: "" }] },
+  { name: "إكسسوارات", image: "https://images.unsplash.com/photo-1617038220319-276d3cfab638?auto=format&fit=crop&w=900&q=85", subcategories: [{ name: "سلاسل", image: "" }, { name: "إنسيالات", image: "" }, { name: "أساور", image: "" }, { name: "حلقان", image: "" }, { name: "غوايش", image: "" }, { name: "خواتم", image: "" }] },
+];
+
+const DEFAULT_STORE_CONTENT: StoreContent = {
+  homepage_sections: { published: true, enabled: true, categories: DEFAULT_CATEGORIES },
+  top_bar: { published: true, enabled: true, text: "أهلاً بيكم في TOTA STORE ❤️", background: "#6d35c8", text_color: "#ffffff" },
+  hero_banner: { published: true, enabled: true, title: "اكتشفي أحدث منتجاتنا", description: "اختاري اللي يعجبك من TOTA STORE", image: "", images: [], button_text: "تسوقي الآن", button_link: "#products" },
+  promotions: { published: true, enabled: true, items: [] },
+  about: { published: true, enabled: true, title: "عن TOTA STORE", description: "" },
+  footer: { published: true, enabled: true, description: "شكراً لثقتكم في TOTA STORE ❤️", whatsapp_number: "", instagram_url: "", tiktok_url: "" },
+};
+
+const PRODUCT_PUBLIC_COLUMNS =
+  "id,name,category,subcategory,description,price,stock,images,active,created_at";
+
+const money = (value: number) =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "EGP",
+    maximumFractionDigits: 0,
+  }).format(value || 0);
+
+export default function AdminPage() {
+  const [products, setProducts] = useState<Product[]>([]);
+  const [editingProductId, setEditingProductId] = useState<number | null>(null);
+  const [editProductForm, setEditProductForm] = useState({
+    name: "",
+    category: "إكسسوارات",
+    subcategory: "سلاسل",
+    description: "",
+    price: "",
+    stock: "0",
+  });
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
+  const [storeContent, setStoreContent] = useState<StoreContent>(DEFAULT_STORE_CONTENT);
+  const [promotionLines, setPromotionLines] = useState("");
+  const [categoryNameDraft, setCategoryNameDraft] = useState("");
+  const [subcategoryNameDraft, setSubcategoryNameDraft] = useState("");
+  const [subcategoryParentDraft, setSubcategoryParentDraft] = useState("");
+  const managedCategories = storeContent.homepage_sections?.categories ?? DEFAULT_CATEGORIES;
+
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+
+    async function restoreAdminSession() {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) return;
+
+        const { data: isAdmin, error } = await supabase.rpc("is_store_admin");
+
+        if (error || isAdmin !== true) {
+          await supabase.auth.signOut();
+          return;
+        }
+
+        if (!active) return;
+
+        setIsLoggedIn(true);
+        await Promise.all([
+          loadProducts(),
+          loadOrders(),
+          loadPaymentMethods(),
+          loadStoreContent(),
+        ]);
+      } catch (error) {
+        console.error("تعذر استعادة جلسة الإدارة:", error);
+        if (active) setIsLoggedIn(false);
+      }
+    }
+
+    restoreAdminSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        if (!session && active) setIsLoggedIn(false);
+      }
+    );
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  const [email, setEmail] = useState("israa2002mahmoud@gmail.com");
+  const [password, setPassword] = useState("");
+
+  const [name, setName] = useState("");
+  const [category, setCategory] = useState("إكسسوارات");
+  const [subcategory, setSubcategory] = useState("سلاسل");
+  const [costPrice, setCostPrice] = useState("");
+  const [stock, setStock] = useState("0");
+  const [price, setPrice] = useState("");
+  const [images, setImages] = useState<string[]>([]);
+
+  const [paymentLabel, setPaymentLabel] = useState("");
+  const [paymentDetails, setPaymentDetails] = useState("");
+
+  const [message, setMessage] = useState("");
+
+  async function loadStoreContent() {
+    const { data, error } = await supabase
+      .from("store_settings")
+      .select("setting_key, setting_value")
+      .in("setting_key", ["top_bar", "hero_banner", "promotions", "about", "footer", "homepage_sections"]);
+
+    if (error) throw error;
+    const next = { ...DEFAULT_STORE_CONTENT };
+    for (const row of data || []) {
+      if (row.setting_key in next) {
+        (next as any)[row.setting_key] = {
+          ...(DEFAULT_STORE_CONTENT as any)[row.setting_key],
+          ...(row.setting_value || {}),
+        };
+      }
+    }
+    setStoreContent(next);
+    setPromotionLines((next.promotions.items || []).map((item) => `${item.title}${item.description ? ` | ${item.description}` : ""}`).join("\n"));
+  }
+
+  async function saveStoreSetting<K extends keyof StoreContent>(key: K, value: StoreContent[K]) {
+    const payload = { ...value, published: true };
+    const { error } = await supabase.from("store_settings").upsert(
+      { setting_key: key, setting_value: payload, updated_at: new Date().toISOString() },
+      { onConflict: "setting_key" }
+    );
+    if (error) throw error;
+    setStoreContent((current) => ({ ...current, [key]: payload }));
+  }
+
+  async function uploadStoreContentImage(file: File) {
+    const extension = file.name.split(".").pop()?.toLowerCase() || "jpg";
+    const path = `banners/${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
+    const { error } = await supabase.storage.from("store-content").upload(path, file, {
+      cacheControl: "3600", upsert: false, contentType: file.type,
+    });
+    if (error) throw error;
+    const { data } = supabase.storage.from("store-content").getPublicUrl(path);
+    return data.publicUrl;
+  }
+
+  async function saveCategories(nextCategories: StoreCategory[]) {
+    const current = storeContent.homepage_sections || DEFAULT_STORE_CONTENT.homepage_sections;
+    await saveStoreSetting("homepage_sections", { ...current, enabled: true, categories: nextCategories });
+  }
+
+  async function renameMainCategory(oldName: string, newName: string) {
+    const clean = newName.trim();
+    if (!clean) return setMessage("اكتبي اسم القسم.");
+    if (managedCategories.some((item) => item.name !== oldName && item.name.trim() === clean)) return setMessage("اسم القسم موجود بالفعل.");
+    try {
+      setLoading(true);
+      const { error } = await supabase.from("products").update({ category: clean }).eq("category", oldName);
+      if (error) throw error;
+      const next = managedCategories.map((item) => item.name === oldName ? { ...item, name: clean } : item);
+      await saveCategories(next);
+      setProducts((old) => old.map((item) => item.category === oldName ? { ...item, category: clean } : item));
+      setCategory(clean);
+      setMessage("تم تغيير اسم القسم وتحديث المنتجات المرتبطة به ❤️");
+    } catch (e) { setMessage(e instanceof Error ? e.message : "تعذر تعديل القسم"); }
+    finally { setLoading(false); }
+  }
+
+  async function renameSubcategory(parentName: string, oldName: string, newName: string) {
+    const clean = newName.trim();
+    if (!clean) return setMessage("اكتبي اسم القسم الفرعي.");
+    const parent = managedCategories.find((item) => item.name === parentName);
+    if (parent?.subcategories.some((item) => item.name !== oldName && item.name.trim() === clean)) return setMessage("اسم القسم الفرعي موجود بالفعل.");
+    try {
+      setLoading(true);
+      const { error } = await supabase.from("products").update({ subcategory: clean }).eq("category", parentName).eq("subcategory", oldName);
+      if (error) throw error;
+      const next = managedCategories.map((item) => item.name === parentName ? { ...item, subcategories: item.subcategories.map((sub) => sub.name === oldName ? { ...sub, name: clean } : sub) } : item);
+      await saveCategories(next);
+      setProducts((old) => old.map((item) => item.category === parentName && item.subcategory === oldName ? { ...item, subcategory: clean } : item));
+      setMessage("تم تعديل القسم الفرعي وتحديث المنتجات المرتبطة به ❤️");
+    } catch (e) { setMessage(e instanceof Error ? e.message : "تعذر تعديل القسم الفرعي"); }
+    finally { setLoading(false); }
+  }
+
+  async function addMainCategory() {
+    const clean = categoryNameDraft.trim();
+    if (!clean) return setMessage("اكتبي اسم القسم الجديد.");
+    if (managedCategories.some((item) => item.name === clean)) return setMessage("القسم موجود بالفعل.");
+    try {
+      setLoading(true);
+      await saveCategories([...managedCategories, { name: clean, image: "", subcategories: [] }]);
+      setCategoryNameDraft("");
+      setMessage("تمت إضافة القسم الرئيسي ❤️");
+    } catch (e) { setMessage(e instanceof Error ? e.message : "تعذرت إضافة القسم"); }
+    finally { setLoading(false); }
+  }
+
+  async function addSubcategory(parentName = subcategoryParentDraft) {
+    const clean = subcategoryNameDraft.trim();
+    const parent = managedCategories.find((item) => item.name === parentName);
+    if (!parent) return setMessage("اختاري القسم الرئيسي أولاً.");
+    if (!clean) return setMessage("اكتبي اسم القسم الفرعي.");
+    if (parent.subcategories.some((item) => item.name === clean)) return setMessage("القسم الفرعي موجود بالفعل.");
+    try {
+      setLoading(true);
+      const next = managedCategories.map((item) => item.name === parent.name ? { ...item, subcategories: [...item.subcategories, { name: clean, image: "" }] } : item);
+      await saveCategories(next);
+      setSubcategoryNameDraft("");
+      setMessage("تمت إضافة القسم الفرعي ❤️");
+    } catch (e) { setMessage(e instanceof Error ? e.message : "تعذرت إضافة القسم الفرعي"); }
+    finally { setLoading(false); }
+  }
+
+  async function changeCategoryImage(parentName: string, file?: File, subName?: string) {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) return setMessage("اختاري ملف صورة فقط.");
+    try {
+      setLoading(true);
+      const url = await uploadStoreContentImage(file);
+      const next = managedCategories.map((item) => item.name !== parentName ? item : subName
+        ? { ...item, subcategories: item.subcategories.map((sub) => sub.name === subName ? { ...sub, image: url } : sub) }
+        : { ...item, image: url });
+      await saveCategories(next);
+      setMessage("تم رفع صورة القسم وحفظها ❤️");
+    } catch (e) { setMessage(e instanceof Error ? e.message : "تعذر رفع الصورة"); }
+    finally { setLoading(false); }
+  }
+
+  async function deleteMainCategory(nameToDelete: string) {
+    const used = products.some((item) => item.category === nameToDelete);
+    if (used) return setMessage("لا يمكن حذف القسم لأنه يحتوي على منتجات. انقلي المنتجات لقسم آخر أولاً.");
+    if (!window.confirm(`حذف القسم «${nameToDelete}»؟`)) return;
+    try { setLoading(true); await saveCategories(managedCategories.filter((item) => item.name !== nameToDelete)); setMessage("تم حذف القسم."); }
+    catch (e) { setMessage(e instanceof Error ? e.message : "تعذر حذف القسم"); }
+    finally { setLoading(false); }
+  }
+
+  async function deleteSubcategory(parentName: string, subName: string) {
+    const used = products.some((item) => item.category === parentName && item.subcategory === subName);
+    if (used) return setMessage("لا يمكن حذف القسم الفرعي لأنه يحتوي على منتجات. انقلي المنتجات لقسم فرعي آخر أولاً.");
+    if (!window.confirm(`حذف القسم الفرعي «${subName}»؟`)) return;
+    try {
+      setLoading(true);
+      const next = managedCategories.map((item) => item.name === parentName ? { ...item, subcategories: item.subcategories.filter((sub) => sub.name !== subName) } : item);
+      await saveCategories(next); setMessage("تم حذف القسم الفرعي.");
+    } catch (e) { setMessage(e instanceof Error ? e.message : "تعذر حذف القسم الفرعي"); }
+    finally { setLoading(false); }
+  }
+
+  async function loadProducts() {
+    const [
+      { data, error },
+      { data: costRows, error: costError },
+    ] = await Promise.all([
+      supabase
+        .from("products")
+        .select(PRODUCT_PUBLIC_COLUMNS)
+        .order("created_at", { ascending: false }),
+      supabase.rpc("get_admin_product_costs"),
+    ]);
+
+    if (error) throw error;
+    if (costError) throw costError;
+
+    const costs = new Map<number, number>(
+      ((costRows || []) as AdminProductCost[]).map((row) => [
+        Number(row.product_id),
+        Number(row.cost_price || 0),
+      ])
+    );
+
+    setProducts((data || []).map((p) => ({
+      id: Number(p.id),
+      name: p.name,
+      category: p.category,
+      subcategory: p.subcategory || "",
+      description: p.description || "",
+      costPrice: costs.get(Number(p.id)) ?? 0,
+      stock: Number(p.stock || 0),
+      price: Number(p.price || 0),
+      images: p.images || [],
+    })));
+  }
+
+  async function loadPaymentMethods() {
+    const { data, error } = await supabase
+      .from("payment_settings")
+      .select("*")
+      .order("created_at", { ascending: true });
+
+    if (error) throw error;
+    setPaymentMethods(data || []);
+  }
+
+  async function loadOrders() {
+    const { data, error } = await supabase
+      .from("orders")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+
+    const formatted: Order[] = await Promise.all(
+      (data || []).map(async (o) => {
+        let receipt = "";
+
+        if (o.receipt_url) {
+          const { data: signed } = await supabase.storage
+            .from("payment-receipts")
+            .createSignedUrl(o.receipt_url, 3600);
+
+          receipt = signed?.signedUrl || "";
+        }
+
+        return {
+          id: Number(o.id),
+          customerName: o.customer_name || "",
+          phone: o.phone || "",
+          address: o.address || "",
+          items: Array.isArray(o.items) ? o.items : [],
+          total: Number(o.total || 0),
+          profit: Number(o.profit || 0),
+          paymentMethod: o.payment_method || "",
+          paymentStatus: o.payment_status || "pending",
+          orderStatus: o.order_status || "pending",
+          receipt,
+          createdAt: o.created_at || "",
+        };
+      })
+    );
+
+    setOrders(formatted);
+  }
+
+  async function refreshAll() {
+    try {
+      setLoading(true);
+      await Promise.all([
+        loadProducts(),
+        loadOrders(),
+        loadPaymentMethods(),
+        loadStoreContent(),
+      ]);
+      setMessage("تم تحديث بيانات المتجر بنجاح ❤️");
+    } catch (error) {
+      console.error(error);
+      setMessage("حدث خطأ أثناء تحميل البيانات.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleLogin() {
+    if (!email.trim() || !password) {
+      setMessage("اكتبي الإيميل وكلمة المرور.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      const { error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+
+      if (error) throw error;
+
+      const { data: isAdmin, error: adminCheckError } =
+        await supabase.rpc("is_store_admin");
+
+      if (adminCheckError || isAdmin !== true) {
+        await supabase.auth.signOut();
+        throw new Error("هذا الحساب غير مصرح له بدخول لوحة الإدارة.");
+      }
+
+      setIsLoggedIn(true);
+      setPassword("");
+
+      await Promise.all([
+        loadProducts(),
+        loadOrders(),
+        loadPaymentMethods(),
+        loadStoreContent(),
+      ]);
+
+      setMessage("تم تسجيل الدخول وتحميل بيانات المتجر ❤️");
+    } catch (error) {
+      console.error(error);
+      setIsLoggedIn(false);
+      setMessage(
+        error instanceof Error ? error.message : "تعذر تسجيل الدخول."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      setLoading(true);
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      setIsLoggedIn(false);
+      setProducts([]);
+      setOrders([]);
+      setPaymentMethods([]);
+      setMessage("تم تسجيل الخروج بأمان.");
+    } catch (error) {
+      console.error(error);
+      setMessage("تعذر تسجيل الخروج. حاولي مرة أخرى.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleForgotPassword() {
+    if (!email.trim()) {
+      setMessage("اكتبي البريد الإلكتروني أولًا.");
+      return;
+    }
+
+    const { error } = await supabase.auth.resetPasswordForEmail(
+      email.trim(),
+      {
+        redirectTo: `${window.location.origin}/reset-password`,
+      }
+    );
+
+    setMessage(
+      error ? error.message : "تم إرسال رابط تغيير كلمة المرور إلى بريدك ❤️"
+    );
+  }
+
+  async function addPaymentMethod() {
+    if (!paymentLabel.trim() || !paymentDetails.trim()) {
+      setMessage("اكتبي اسم وسيلة الدفع وبيانات التحويل.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      const { data, error } = await supabase
+        .from("payment_settings")
+        .insert({
+          id: crypto.randomUUID(),
+          label: paymentLabel.trim(),
+          account_details: paymentDetails.trim(),
+          enabled: true,
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setPaymentMethods((old) => [...old, data]);
+      setPaymentLabel("");
+      setPaymentDetails("");
+      setMessage("تمت إضافة وسيلة الدفع وتفعيلها بنجاح ❤️");
+    } catch (error) {
+      console.error(error);
+      setMessage("تعذرت إضافة وسيلة الدفع. حاولي مرة أخرى.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function togglePaymentMethod(method: PaymentMethod) {
+    try {
+      setLoading(true);
+
+      const { error } = await supabase
+        .from("payment_settings")
+        .update({ enabled: !method.enabled })
+        .eq("id", method.id);
+
+      if (error) throw error;
+
+      setPaymentMethods((old) =>
+        old.map((item) =>
+          item.id === method.id
+            ? { ...item, enabled: !method.enabled }
+            : item
+        )
+      );
+
+      setMessage(
+        method.enabled
+          ? "تم إيقاف وسيلة الدفع."
+          : "تم تفعيل وسيلة الدفع."
+      );
+    } catch (error) {
+      console.error(error);
+      setMessage("تعذر تغيير حالة وسيلة الدفع.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleImages(files: FileList | null) {
+    if (!files) return;
+
+    const remaining = 5 - images.length;
+
+    if (remaining <= 0) {
+      setMessage("مسموح بحد أقصى 5 صور.");
+      return;
+    }
+
+    const selected = Array.from(files).slice(0, remaining);
+
+    if (selected.some((file) => !file.type.startsWith("image/"))) {
+      setMessage("اختاري صورًا فقط.");
+      return;
+    }
+
+    const readers = selected.map(
+      (file) =>
+        new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject();
+          reader.readAsDataURL(file);
+        })
+    );
+
+    Promise.all(readers)
+      .then((newImages) => {
+        setImages((old) => [...old, ...newImages].slice(0, 5));
+        setMessage("تم تجهيز الصور.");
+      })
+      .catch(() => setMessage("حدث خطأ أثناء قراءة الصور."));
+  }
+
+  async function addProduct() {
+    if (!name.trim()) {
+      setMessage("اكتبي اسم المنتج.");
+      return;
+    }
+
+    if (costPrice.trim() === "" || price.trim() === "") {
+      setMessage("اكتبي سعر الشراء وسعر البيع.");
+      return;
+    }
+
+    if (
+      !Number.isFinite(Number(price)) ||
+      Number(price) <= 0 ||
+      !Number.isFinite(Number(costPrice)) ||
+      Number(costPrice) < 0
+    ) {
+      setMessage("راجعي الأسعار المدخلة.");
+      return;
+    }
+
+    if (!Number.isInteger(Number(stock)) || Number(stock) < 0) {
+      setMessage("اكتبي كمية صحيحة لا تقل عن صفر.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      const { data, error } = await supabase
+        .from("products")
+        .insert({
+          name: name.trim(),
+          category,
+          subcategory,
+          cost_price: Number(costPrice),
+          stock: Number(stock),
+          price: Number(price),
+          images,
+          active: true,
+        })
+        .select(PRODUCT_PUBLIC_COLUMNS)
+        .single();
+
+      if (error) throw error;
+
+      setProducts((old) => [{
+        id: Number(data.id),
+        name: data.name,
+        category: data.category,
+        subcategory: data.subcategory || "",
+        description: data.description || "",
+        costPrice: Number(costPrice),
+        stock: Number(data.stock || 0),
+        price: Number(data.price || 0),
+        images: data.images || [],
+      }, ...old]);
+
+      window.dispatchEvent(new Event("tota-products-updated"));
+
+      setName("");
+      setCostPrice("");
+      setStock("0");
+      setPrice("");
+      setImages([]);
+
+      setMessage("تم حفظ المنتج في قاعدة البيانات بنجاح ❤️");
+    } catch (error) {
+      console.error(error);
+      setMessage("تعذر حفظ المنتج. راجعي صلاحيات قاعدة البيانات وحجم الصور.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function startEditingProduct(product: Product) {
+    setEditingProductId(product.id);
+    setEditProductForm({
+      name: product.name,
+      category: product.category,
+      subcategory: product.subcategory || (managedCategories.find((item) => item.name === product.category)?.subcategories[0]?.name || ""),
+      description: product.description || "",
+      price: String(product.price),
+      stock: String(product.stock),
+    });
+    setMessage("");
+  }
+
+  async function saveProductEdits(productId: number) {
+    const productName = editProductForm.name.trim();
+    const productPrice = Number(editProductForm.price);
+    const productStock = Number(editProductForm.stock);
+
+    if (!productName) {
+      setMessage("اكتبي اسم المنتج.");
+      return;
+    }
+
+    if (
+      editProductForm.price.trim() === "" ||
+      !Number.isFinite(productPrice) ||
+      productPrice <= 0
+    ) {
+      setMessage("اكتبي سعر بيع صحيح أكبر من صفر.");
+      return;
+    }
+
+    if (
+      editProductForm.stock.trim() === "" ||
+      !Number.isInteger(productStock) ||
+      productStock < 0
+    ) {
+      setMessage("اكتبي كمية صحيحة لا تقل عن صفر.");
+      return;
+    }
+
+    if (editProductForm.subcategory && !(managedCategories.find((item) => item.name === editProductForm.category)?.subcategories || []).some((item) => item.name === editProductForm.subcategory)) {
+      setMessage("اختاري قسمًا فرعيًا صحيحًا.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      const { error } = await supabase
+        .from("products")
+        .update({
+          name: productName,
+          category: editProductForm.category,
+          subcategory: editProductForm.subcategory,
+          description: editProductForm.description.trim(),
+          price: productPrice,
+          stock: productStock,
+        })
+        .eq("id", productId);
+
+      if (error) throw error;
+
+      setProducts((old) =>
+        old.map((product) =>
+          product.id === productId
+            ? {
+                ...product,
+                name: productName,
+                category: editProductForm.category,
+                subcategory: editProductForm.subcategory,
+                description: editProductForm.description.trim(),
+                price: productPrice,
+                stock: productStock,
+              }
+            : product
+        )
+      );
+
+      setEditingProductId(null);
+      window.dispatchEvent(new Event("tota-products-updated"));
+      setMessage("تم تعديل بيانات المنتج بنجاح ❤️");
+    } catch (error) {
+      console.error(error);
+      setMessage(
+        error instanceof Error
+          ? `تعذر تعديل المنتج: ${error.message}`
+          : "تعذر تعديل بيانات المنتج."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function deleteProduct(id: number) {
+    if (!window.confirm("هل تريدين حذف المنتج؟")) return;
+
+    try {
+      setLoading(true);
+
+      const { error } = await supabase
+        .from("products")
+        .delete()
+        .eq("id", id);
+
+      if (error) throw error;
+
+      setProducts((old) => old.filter((p) => p.id !== id));
+      window.dispatchEvent(new Event("tota-products-updated"));
+      setMessage("تم حذف المنتج بنجاح.");
+    } catch (error) {
+      console.error(error);
+      setMessage("تعذر حذف المنتج. قد يكون مرتبطًا بطلب سابق.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function reviewOrder(orderId: number, decision: "approve" | "reject") {
+    const question =
+      decision === "approve"
+        ? "هل تأكدتِ من وصول التحويل وتريدين تأكيد الطلب؟"
+        : "هل تريدين رفض الإيصال وإرجاع الكمية للمخزون؟";
+
+    if (!window.confirm(question)) return;
+
+    try {
+      setLoading(true);
+
+      const { error } = await supabase.rpc("admin_review_order", {
+        p_order_id: orderId,
+        p_decision: decision,
+      });
+
+      if (error) throw error;
+
+      await Promise.all([loadOrders(), loadProducts()]);
+
+      setMessage(
+        decision === "approve"
+          ? "تم قبول الإيصال وتأكيد الطلب ❤️"
+          : "تم رفض الإيصال وإرجاع الكمية للمخزون."
+      );
+    } catch (error) {
+      console.error(error);
+      setMessage(
+        error instanceof Error ? error.message : "تعذرت مراجعة الطلب."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const pendingOrders = orders.filter(
+    (o) => o.paymentStatus === "pending" || o.paymentStatus === "pending_review"
+  );
+
+  const confirmedOrders = orders.filter(
+    (o) => o.orderStatus === "confirmed"
+  );
+
+  const rejectedOrders = orders.filter(
+    (o) => o.orderStatus === "rejected"
+  );
+
+  const netProfit = confirmedOrders.reduce(
+    (sum, order) => sum + order.profit,
+    0
+  );
+
+  if (!isLoggedIn) {
+    return (
+      <main dir="rtl" style={pageStyle}>
+        <div style={{
+          maxWidth: 400,
+          margin: "100px auto",
+          padding: 25,
+          background: "#24152f",
+          borderRadius: 16,
+        }}>
+          <h1 style={{ color: "#ed70e8", textAlign: "center" }}>
+            TOTA STORE
+          </h1>
+
+          <h2 style={{ textAlign: "center" }}>تسجيل دخول الإدارة</h2>
+
+          <input
+            type="email"
+            placeholder="البريد الإلكتروني"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            style={inputStyle}
+          />
+
+          <input
+            type="password"
+            placeholder="كلمة المرور"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            style={inputStyle}
+          />
+
+          <button onClick={handleLogin} disabled={loading} style={buttonStyle}>
+            {loading ? "جاري الدخول..." : "تسجيل الدخول"}
+          </button>
+
+          <button
+            onClick={handleForgotPassword}
+            style={{
+              ...buttonStyle,
+              background: "transparent",
+              border: "1px solid #ed70e8",
+              color: "#ed70e8",
+            }}
+          >
+            نسيت كلمة المرور؟
+          </button>
+
+          {message && <p>{message}</p>}
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main dir="rtl" style={pageStyle}>
+      <div style={{ maxWidth: 1000, margin: "auto" }}>
+        <h1 style={{ color: "#ed70e8" }}>TOTA STORE</h1>
+        <h2>لوحة إدارة المتجر</h2>
+        <p style={{ color: "#c5b8ce" }}>
+          إدارة المنتجات والطلبات ووسائل الدفع والأرباح
+        </p>
+
+        <button onClick={refreshAll} disabled={loading} style={buttonStyle}>
+          تحديث كل بيانات المتجر
+        </button>
+
+        <button
+          onClick={handleLogout}
+          disabled={loading}
+          style={{ ...buttonStyle, background: "#654879" }}
+        >
+          تسجيل الخروج
+        </button>
+
+        <section style={sectionStyle}>
+          <h2>إحصائيات الطلبات</h2>
+
+          <div style={statsGrid}>
+            <Stat title="إجمالي الطلبات" value={orders.length} />
+            <Stat title="الطلبات المؤكدة" value={confirmedOrders.length} />
+            <Stat title="بانتظار الدفع أو المراجعة" value={pendingOrders.length} />
+            <Stat title="الطلبات المرفوضة" value={rejectedOrders.length} />
+            <Stat title="صافي الربح من الطلبات المؤكدة" value={money(netProfit)} />
+          </div>
+        </section>
+
+        <section style={sectionStyle}>
+          <h2>🎨 التحكم في واجهة المتجر والإعلانات</h2>
+          <p style={{ color: "#cbb7d8" }}>عدّلي المحتوى واحفظيه ليظهر للزوار. الصور تُرفع إلى مساحة store-content الآمنة.</p>
+
+          <h3>الشريط العلوي</h3>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}><input type="checkbox" checked={storeContent.top_bar.enabled} onChange={(e) => setStoreContent((v) => ({ ...v, top_bar: { ...v.top_bar, enabled: e.target.checked } }))} /> إظهار الشريط العلوي</label>
+          <label>النص الظاهر أعلى المتجر</label>
+          <input style={inputStyle} value={storeContent.top_bar.text} onChange={(e) => setStoreContent((v) => ({ ...v, top_bar: { ...v.top_bar, text: e.target.value } }))} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <label>لون الخلفية<input type="color" value={storeContent.top_bar.background} onChange={(e) => setStoreContent((v) => ({ ...v, top_bar: { ...v.top_bar, background: e.target.value } }))} style={{ ...inputStyle, height: 48 }} /></label>
+            <label>لون النص<input type="color" value={storeContent.top_bar.text_color} onChange={(e) => setStoreContent((v) => ({ ...v, top_bar: { ...v.top_bar, text_color: e.target.value } }))} style={{ ...inputStyle, height: 48 }} /></label>
+          </div>
+          <button style={buttonStyle} disabled={loading} onClick={async () => { try { setLoading(true); await saveStoreSetting("top_bar", storeContent.top_bar); setMessage("تم حفظ الشريط العلوي ونشره ❤️"); } catch (e) { setMessage(e instanceof Error ? e.message : "تعذر حفظ الشريط العلوي"); } finally { setLoading(false); } }}>حفظ ونشر الشريط العلوي</button>
+
+          <h3>البانر الرئيسي</h3>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}><input type="checkbox" checked={storeContent.hero_banner.enabled} onChange={(e) => setStoreContent((v) => ({ ...v, hero_banner: { ...v.hero_banner, enabled: e.target.checked } }))} /> إظهار البانر الرئيسي</label>
+          <label>العنوان</label>
+          <input style={inputStyle} value={storeContent.hero_banner.title} onChange={(e) => setStoreContent((v) => ({ ...v, hero_banner: { ...v.hero_banner, title: e.target.value } }))} />
+          <label>الوصف</label>
+          <textarea rows={3} style={inputStyle} value={storeContent.hero_banner.description} onChange={(e) => setStoreContent((v) => ({ ...v, hero_banner: { ...v.hero_banner, description: e.target.value } }))} />
+          <label>نص الزر</label>
+          <input style={inputStyle} value={storeContent.hero_banner.button_text} onChange={(e) => setStoreContent((v) => ({ ...v, hero_banner: { ...v.hero_banner, button_text: e.target.value } }))} />
+          <label>رابط الزر</label>
+          <input style={inputStyle} value={storeContent.hero_banner.button_link} onChange={(e) => setStoreContent((v) => ({ ...v, hero_banner: { ...v.hero_banner, button_link: e.target.value } }))} />
+          <label>صور البانر (يمكن اختيار عدة صور، JPEG / PNG / WebP / GIF، كل صورة حتى 5MB)</label>
+          <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif" style={inputStyle} onChange={async (e) => { const files = Array.from(e.currentTarget.files || []); const input = e.currentTarget; if (!files.length) return; const invalid = files.find((file) => file.size > 5 * 1024 * 1024 || !["image/jpeg", "image/png", "image/webp", "image/gif"].includes(file.type)); if (invalid) { setMessage(invalid.size > 5 * 1024 * 1024 ? `حجم الصورة ${invalid.name} أكبر من 5 ميجابايت.` : `نوع الصورة ${invalid.name} غير مدعوم.`); input.value = ""; return; } try { setLoading(true); const uploaded = await Promise.all(files.map((file) => uploadStoreContentImage(file))); setStoreContent((current) => { const images = [...(current.hero_banner.images || (current.hero_banner.image ? [current.hero_banner.image] : [])), ...uploaded]; return { ...current, hero_banner: { ...current.hero_banner, images, image: images[0] || "" } }; }); setMessage(`تم رفع ${uploaded.length} صورة. اضغطي حفظ ونشر البانر لتثبيتها.`); } catch (err) { setMessage(err instanceof Error ? err.message : "تعذر رفع الصور"); } finally { setLoading(false); input.value = ""; } }} />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(145px,1fr))", gap: 12, margin: "12px 0" }}>
+            {(storeContent.hero_banner.images || (storeContent.hero_banner.image ? [storeContent.hero_banner.image] : [])).map((url, index) => <div key={`${url}-${index}`} style={{ position: "relative" }}><img src={url} alt={`صورة البانر ${index + 1}`} style={{ width: "100%", height: 105, objectFit: "cover", borderRadius: 12 }} /><button type="button" aria-label="حذف صورة البانر" onClick={() => setStoreContent((current) => { const images = (current.hero_banner.images || (current.hero_banner.image ? [current.hero_banner.image] : [])).filter((_, i) => i !== index); return { ...current, hero_banner: { ...current.hero_banner, images, image: images[0] || "" } }; })} style={{ ...buttonStyle, position: "absolute", top: 5, left: 5, padding: "5px 9px", background: "#b42318" }}>حذف</button><div style={{ fontSize: 12, marginTop: 4 }}>صورة {index + 1}</div></div>)}
+          </div>
+          <button style={buttonStyle} disabled={loading} onClick={async () => { try { setLoading(true); const images = storeContent.hero_banner.images || (storeContent.hero_banner.image ? [storeContent.hero_banner.image] : []); await saveStoreSetting("hero_banner", { ...storeContent.hero_banner, images, image: images[0] || "" }); setMessage("تم حفظ صور البانر ونشرها ❤️"); } catch (e) { setMessage(e instanceof Error ? e.message : "تعذر حفظ البانر"); } finally { setLoading(false); } }}>حفظ ونشر البانر</button>
+
+          <h3>الإعلانات والعروض</h3>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}><input type="checkbox" checked={storeContent.promotions.enabled} onChange={(e) => setStoreContent((v) => ({ ...v, promotions: { ...v.promotions, enabled: e.target.checked } }))} /> إظهار العروض والإعلانات</label>
+          <label>كل عرض في سطر، واكتبي العنوان ثم | ثم الوصف (اختياري)</label>
+          <textarea rows={5} style={inputStyle} placeholder={"عرض نهاية الأسبوع | خصومات على منتجات مختارة\nوصل حديثًا | اكتشفي أحدث الإضافات"} value={promotionLines} onChange={(e) => setPromotionLines(e.target.value)} />
+          <button style={buttonStyle} disabled={loading} onClick={async () => { try { setLoading(true); const items = promotionLines.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => { const [title, ...rest] = line.split("|"); return { title: title.trim(), description: rest.join("|").trim() }; }); await saveStoreSetting("promotions", { ...storeContent.promotions, enabled: true, items }); setMessage("تم حفظ العروض ونشرها ❤️"); } catch (e) { setMessage(e instanceof Error ? e.message : "تعذر حفظ العروض"); } finally { setLoading(false); } }}>حفظ ونشر العروض</button>
+
+          <h3>عن TOTA STORE</h3>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}><input type="checkbox" checked={storeContent.about.enabled} onChange={(e) => setStoreContent((v) => ({ ...v, about: { ...v.about, enabled: e.target.checked } }))} /> إظهار قسم عن المتجر</label>
+          <label>عنوان القسم</label>
+          <input style={inputStyle} value={storeContent.about.title} onChange={(e) => setStoreContent((v) => ({ ...v, about: { ...v.about, title: e.target.value } }))} />
+          <label>الوصف</label>
+          <textarea rows={3} style={inputStyle} value={storeContent.about.description} onChange={(e) => setStoreContent((v) => ({ ...v, about: { ...v.about, description: e.target.value } }))} />
+          <button style={buttonStyle} disabled={loading} onClick={async () => { try { setLoading(true); await saveStoreSetting("about", storeContent.about); setMessage("تم حفظ قسم عن المتجر ونشره ❤️"); } catch (e) { setMessage(e instanceof Error ? e.message : "تعذر الحفظ"); } finally { setLoading(false); } }}>حفظ ونشر قسم عن المتجر</button>
+
+          <h3>الفوتر</h3>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}><input type="checkbox" checked={storeContent.footer.enabled} onChange={(e) => setStoreContent((v) => ({ ...v, footer: { ...v.footer, enabled: e.target.checked } }))} /> إظهار نص الفوتر</label>
+          <label>النص أسفل المتجر</label>
+          <textarea rows={2} style={inputStyle} value={storeContent.footer.description} onChange={(e) => setStoreContent((v) => ({ ...v, footer: { ...v.footer, description: e.target.value } }))} />
+          <label>رقم واتساب المتجر (بمفتاح الدولة، مثال مصر 201xxxxxxxxx)</label>
+          <input dir="ltr" inputMode="tel" style={inputStyle} placeholder="201xxxxxxxxx" value={storeContent.footer.whatsapp_number || ""} onChange={(e) => setStoreContent((v) => ({ ...v, footer: { ...v.footer, whatsapp_number: e.target.value } }))} />
+          <label>رابط أو اسم حساب إنستجرام</label>
+          <input dir="ltr" style={inputStyle} placeholder="https://instagram.com/yourstore أو @yourstore" value={storeContent.footer.instagram_url || ""} onChange={(e) => setStoreContent((v) => ({ ...v, footer: { ...v.footer, instagram_url: e.target.value } }))} />
+          <label>رابط أو اسم حساب تيك توك</label>
+          <input dir="ltr" style={inputStyle} placeholder="https://tiktok.com/@yourstore أو @yourstore" value={storeContent.footer.tiktok_url || ""} onChange={(e) => setStoreContent((v) => ({ ...v, footer: { ...v.footer, tiktok_url: e.target.value } }))} />
+          <button style={buttonStyle} disabled={loading} onClick={async () => { try { setLoading(true); await saveStoreSetting("footer", storeContent.footer); setMessage("تم حفظ الفوتر وروابط التواصل ونشرها ❤️"); } catch (e) { setMessage(e instanceof Error ? e.message : "تعذر الحفظ"); } finally { setLoading(false); } }}>حفظ ونشر الفوتر</button>
+        </section>
+
+        <section style={sectionStyle}>
+          <h2>🗂️ إدارة الأقسام الرئيسية والفرعية</h2>
+          <p style={{ color: "#cbb7d8" }}>أضيفي الأقسام وغيّري أسماءها وصورها. أي تعديل على الاسم يحدّث المنتجات المرتبطة تلقائيًا.</p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10, marginBottom: 18 }}>
+            <input style={inputStyle} value={categoryNameDraft} onChange={(e) => setCategoryNameDraft(e.target.value)} placeholder="اسم القسم الرئيسي الجديد" />
+            <button style={buttonStyle} disabled={loading} onClick={addMainCategory}>+ إضافة قسم رئيسي</button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 14 }}>
+            {managedCategories.map((item) => <article key={item.name} style={{ border: "1px solid #654879", borderRadius: 14, padding: 14, background: "#2d1c3b" }}>
+              {item.image && <img src={item.image} alt={item.name} style={{ width: "100%", height: 130, objectFit: "cover", borderRadius: 10, marginBottom: 10 }} />}
+              <label>اسم القسم الرئيسي</label>
+              <input style={inputStyle} defaultValue={item.name} key={`main-${item.name}`} onBlur={(e) => { if (e.target.value.trim() && e.target.value.trim() !== item.name) renameMainCategory(item.name, e.target.value); }} />
+              <label>تغيير صورة القسم</label>
+              <input type="file" accept="image/*" style={inputStyle} disabled={loading} onChange={(e) => changeCategoryImage(item.name, e.target.files?.[0])} />
+              <button style={{ ...buttonStyle, background: "#9b2c4d", marginBottom: 12 }} disabled={loading} onClick={() => deleteMainCategory(item.name)}>حذف القسم الرئيسي</button>
+              <h4 style={{ color: "#f0b7f2" }}>الأقسام الفرعية</h4>
+              {item.subcategories.map((sub) => <div key={sub.name} style={{ borderTop: "1px solid #654879", paddingTop: 9, marginTop: 9 }}>
+                <input style={inputStyle} defaultValue={sub.name} key={`sub-${item.name}-${sub.name}`} onBlur={(e) => { if (e.target.value.trim() && e.target.value.trim() !== sub.name) renameSubcategory(item.name, sub.name, e.target.value); }} />
+                {sub.image && <img src={sub.image} alt={sub.name} style={{ width: 76, height: 64, objectFit: "cover", borderRadius: 8 }} />}
+                <label>صورة القسم الفرعي (اختياري)</label>
+                <input type="file" accept="image/*" style={inputStyle} disabled={loading} onChange={(e) => changeCategoryImage(item.name, e.target.files?.[0], sub.name)} />
+                <button style={{ ...buttonStyle, background: "#75405e" }} disabled={loading} onClick={() => deleteSubcategory(item.name, sub.name)}>حذف القسم الفرعي</button>
+              </div>)}
+              <div style={{ borderTop: "1px solid #654879", marginTop: 12, paddingTop: 12 }}>
+                <input style={inputStyle} value={subcategoryParentDraft === item.name ? subcategoryNameDraft : ""} onFocus={() => setSubcategoryParentDraft(item.name)} onChange={(e) => { setSubcategoryParentDraft(item.name); setSubcategoryNameDraft(e.target.value); }} placeholder="اسم قسم فرعي جديد" />
+                <button style={buttonStyle} disabled={loading} onClick={() => addSubcategory(item.name)}>+ إضافة قسم فرعي لهذا القسم</button>
+              </div>
+            </article>)}
+          </div>
+        </section>
+
+        <section style={sectionStyle}>
+          <h2>وسائل الدفع والتحويل</h2>
+          <p style={{ color: "#cbb7d8" }}>
+            أضيفي بيانات التحويل التي تريدين ظهورها للعملاء. لا تضيفي إلا الوسائل التي تستقبلين عليها الأموال فعلًا.
+          </p>
+
+          <label>اسم وسيلة الدفع</label>
+          <input
+            value={paymentLabel}
+            onChange={(e) => setPaymentLabel(e.target.value)}
+            placeholder="مثال: InstaPay أو محفظة Vodafone Cash"
+            style={inputStyle}
+          />
+
+          <label>بيانات التحويل التي ستظهر للعميل</label>
+          <textarea
+            value={paymentDetails}
+            onChange={(e) => setPaymentDetails(e.target.value)}
+            placeholder={"اكتبي بيانات التحويل هنا، مثل رقم المحفظة أو عنوان InstaPay.\nيمكنك إضافة تعليمات التحويل للعميل."}
+            rows={4}
+            style={inputStyle}
+          />
+
+          <button
+            onClick={addPaymentMethod}
+            disabled={loading}
+            style={buttonStyle}
+          >
+            {loading ? "جاري الحفظ..." : "+ إضافة وسيلة الدفع"}
+          </button>
+
+          <h3>وسائل الدفع الحالية</h3>
+
+          {paymentMethods.length === 0 && (
+            <p>لا توجد وسائل دفع مضافة حتى الآن.</p>
+          )}
+
+          {paymentMethods.map((method) => (
+            <article key={method.id} style={orderStyle}>
+              <h3>{method.label}</h3>
+              <p style={{ whiteSpace: "pre-wrap" }}>
+                {method.account_details}
+              </p>
+              <p>
+                الحالة: {method.enabled ? "مفعّلة" : "متوقفة"}
+              </p>
+              <button
+                onClick={() => togglePaymentMethod(method)}
+                disabled={loading}
+                style={{
+                  ...buttonStyle,
+                  background: method.enabled ? "#a52b50" : "#398b61",
+                }}
+              >
+                {method.enabled ? "إيقاف وسيلة الدفع" : "تفعيل وسيلة الدفع"}
+              </button>
+            </article>
+          ))}
+        </section>
+
+        <section style={sectionStyle}>
+          <h2>الطلبات وإيصالات التحويل</h2>
+
+          {orders.length === 0 && <p>لا توجد طلبات حتى الآن.</p>}
+
+          {orders.map((order) => (
+            <article key={order.id} style={orderStyle}>
+              <h3>طلب رقم: {order.id}</h3>
+              <p>تاريخ الطلب: {order.createdAt ? new Date(order.createdAt).toLocaleString("ar-EG") : "غير محدد"}</p>
+              <p>العميل: {order.customerName || "غير محدد"}</p>
+              <p>الهاتف: {order.phone || "غير محدد"}</p>
+              <p>العنوان: {order.address || "غير محدد"}</p>
+              <p>وسيلة الدفع: {paymentMethods.find((m) => m.id === order.paymentMethod)?.label || order.paymentMethod || "غير محددة"}</p>
+
+              <p>
+                حالة الدفع:{" "}
+                {order.paymentStatus === "pending_review"
+                  ? "الإيصال في انتظار المراجعة"
+                  : order.paymentStatus === "approved"
+                    ? "تم قبول الدفع"
+                    : order.paymentStatus === "rejected"
+                      ? "مرفوض"
+                      : "في انتظار التحويل"}
+              </p>
+
+              <h4>المنتجات:</h4>
+              {order.items.map((item, index) => (
+                <p key={index}>
+                  {item.name} — الكمية: {item.quantity} — سعر البيع: {money(item.price)}
+                </p>
+              ))}
+
+              <p>إجمالي الطلب: {money(order.total)}</p>
+
+              {order.receipt ? (
+                <div>
+                  <p>إيصال التحويل:</p>
+                  <a href={order.receipt} target="_blank" rel="noreferrer">
+                    <img
+                      src={order.receipt}
+                      alt="إيصال التحويل"
+                      style={{
+                        maxWidth: 220,
+                        maxHeight: 220,
+                        objectFit: "contain",
+                        borderRadius: 10,
+                      }}
+                    />
+                  </a>
+                </div>
+              ) : (
+                <p>لم يتم رفع إيصال التحويل بعد.</p>
+              )}
+
+              {order.paymentStatus === "pending_review" &&
+                order.orderStatus === "pending" && (
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <button
+                      style={buttonStyle}
+                      disabled={loading}
+                      onClick={() => reviewOrder(order.id, "approve")}
+                    >
+                      قبول الإيصال وتأكيد الطلب
+                    </button>
+
+                    <button
+                      style={{ ...buttonStyle, background: "#a52b50" }}
+                      disabled={loading}
+                      onClick={() => reviewOrder(order.id, "reject")}
+                    >
+                      رفض الإيصال
+                    </button>
+                  </div>
+                )}
+            </article>
+          ))}
+        </section>
+
+        <section style={sectionStyle}>
+          <h2>إضافة منتج جديد</h2>
+
+          <label>اسم المنتج</label>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="اسم المنتج"
+            style={inputStyle}
+          />
+
+          <label>القسم الرئيسي</label>
+          <select value={category} onChange={(e) => { const next = e.target.value; setCategory(next); setSubcategory(managedCategories.find((item) => item.name === next)?.subcategories[0]?.name || ""); }} style={inputStyle}>
+            {managedCategories.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+          </select>
+
+          <label>القسم الفرعي</label>
+          <select value={subcategory} onChange={(e) => setSubcategory(e.target.value)} style={inputStyle}>
+            <option value="">بدون قسم فرعي</option>
+            {(managedCategories.find((item) => item.name === category)?.subcategories || []).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+          </select>
+
+          <label>سعر الشراء من التاجر (سري)</label>
+          <input
+            type="number"
+            min="0"
+            value={costPrice}
+            onChange={(e) => setCostPrice(e.target.value)}
+            placeholder="سعر الشراء"
+            style={inputStyle}
+          />
+
+          <label>الكمية المتاحة في المخزون</label>
+          <input
+            type="number"
+            min="0"
+            value={stock}
+            onChange={(e) => setStock(e.target.value)}
+            placeholder="الكمية المتاحة"
+            style={inputStyle}
+          />
+
+          <label>سعر البيع للعميل</label>
+          <input
+            type="number"
+            min="1"
+            value={price}
+            onChange={(e) => setPrice(e.target.value)}
+            placeholder="سعر البيع"
+            style={inputStyle}
+          />
+
+          <p style={{ color: "#f28be9" }}>
+            ربح القطعة:{" "}
+            {costPrice !== "" && price !== ""
+              ? money(Number(price) - Number(costPrice))
+              : "سيظهر بعد إدخال الأسعار"}
+          </p>
+
+          <label>صور المنتج (حتى 5 صور)</label>
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            onChange={(e) => {
+              handleImages(e.target.files);
+              e.target.value = "";
+            }}
+            style={inputStyle}
+          />
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+            {images.map((src, index) => (
+              <div key={index} style={{ position: "relative" }}>
+                <img
+                  src={src}
+                  alt="صورة المنتج"
+                  style={{
+                    width: 85,
+                    height: 85,
+                    objectFit: "contain",
+                    background: "white",
+                    borderRadius: 10,
+                  }}
+                />
+                <button
+                  onClick={() => setImages((old) => old.filter((_, i) => i !== index))}
+                  style={{
+                    position: "absolute",
+                    top: 2,
+                    right: 2,
+                    background: "#a21b55",
+                    color: "white",
+                    border: 0,
+                    borderRadius: 20,
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <button onClick={addProduct} disabled={loading} style={buttonStyle}>
+            {loading ? "جاري الحفظ..." : "+ حفظ وإضافة المنتج"}
+          </button>
+        </section>
+
+        <section style={sectionStyle}>
+          <h2>المنتجات ({products.length})</h2>
+
+          {products.map((product) => (
+            <article key={product.id} style={orderStyle}>
+              <h3>{product.name}</h3>
+              <p>{product.category} — {product.subcategory}</p>
+              {product.description && (
+                <p style={{ whiteSpace: "pre-wrap" }}>{product.description}</p>
+              )}
+              <p>الكمية المتاحة: {product.stock}</p>
+              <p>سعر الشراء: {money(product.costPrice)}</p>
+              <p>سعر البيع: {money(product.price)}</p>
+              <p style={{ color: "#f28be9" }}>
+                ربح القطعة: {money(product.price - product.costPrice)}
+              </p>
+
+              {editingProductId === product.id && (
+                <div
+                  style={{
+                    background: "#352342",
+                    border: "1px solid #654879",
+                    borderRadius: 12,
+                    padding: 16,
+                    margin: "14px 0",
+                  }}
+                >
+                  <h4 style={{ color: "#f28be9", marginTop: 0 }}>تعديل بيانات المنتج</h4>
+
+                  <label>اسم المنتج</label>
+                  <input
+                    value={editProductForm.name}
+                    onChange={(e) =>
+                      setEditProductForm((old) => ({ ...old, name: e.target.value }))
+                    }
+                    style={inputStyle}
+                  />
+
+                  <label>القسم الرئيسي</label>
+                  <select value={editProductForm.category} onChange={(e) => { const nextCategory = e.target.value; setEditProductForm((old) => ({ ...old, category: nextCategory, subcategory: managedCategories.find((item) => item.name === nextCategory)?.subcategories[0]?.name || "" })); }} style={inputStyle}>
+                    {managedCategories.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+                  </select>
+
+                  <label>القسم الفرعي</label>
+                  <select value={editProductForm.subcategory} onChange={(e) => setEditProductForm((old) => ({ ...old, subcategory: e.target.value }))} style={inputStyle}>
+                    <option value="">بدون قسم فرعي</option>
+                    {(managedCategories.find((item) => item.name === editProductForm.category)?.subcategories || []).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+                  </select>
+
+                  <label>وصف المنتج</label>
+                  <textarea
+                    value={editProductForm.description}
+                    onChange={(e) =>
+                      setEditProductForm((old) => ({
+                        ...old,
+                        description: e.target.value,
+                      }))
+                    }
+                    rows={4}
+                    style={inputStyle}
+                  />
+
+                  <label>سعر البيع للعميل</label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="0.01"
+                    value={editProductForm.price}
+                    onChange={(e) =>
+                      setEditProductForm((old) => ({ ...old, price: e.target.value }))
+                    }
+                    style={inputStyle}
+                  />
+
+                  <label>الكمية المتاحة في المخزون</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={editProductForm.stock}
+                    onChange={(e) =>
+                      setEditProductForm((old) => ({ ...old, stock: e.target.value }))
+                    }
+                    style={inputStyle}
+                  />
+
+                  <button
+                    onClick={() => saveProductEdits(product.id)}
+                    disabled={loading}
+                    style={buttonStyle}
+                  >
+                    {loading ? "جاري الحفظ..." : "حفظ التعديلات"}
+                  </button>
+
+                  <button
+                    onClick={() => setEditingProductId(null)}
+                    disabled={loading}
+                    style={{
+                      ...buttonStyle,
+                      background: "#654879",
+                    }}
+                  >
+                    إلغاء التعديل
+                  </button>
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {product.images.map((src, index) => (
+                  <img
+                    key={index}
+                    src={src}
+                    alt={product.name}
+                    style={{
+                      width: 65,
+                      height: 65,
+                      objectFit: "contain",
+                      background: "white",
+                      borderRadius: 8,
+                    }}
+                  />
+                ))}
+              </div>
+
+              <button
+                onClick={() => startEditingProduct(product)}
+                disabled={loading}
+                style={{ ...buttonStyle, background: "#7136a8" }}
+              >
+                تعديل بيانات المنتج
+              </button>
+
+              <button
+                onClick={() => deleteProduct(product.id)}
+                disabled={loading}
+                style={{ ...buttonStyle, background: "#a52b50" }}
+              >
+                حذف المنتج
+              </button>
+            </article>
+          ))}
+        </section>
+
+        {message && <p style={{ color: "#f5a3ed" }}>{message}</p>}
+      </div>
+    </main>
+  );
+}
+
+function Stat({ title, value }: { title: string; value: string | number }) {
+  return (
+    <div style={statStyle}>
+      <p style={{ color: "#cbb7d8" }}>{title}</p>
+      <strong style={{ color: "#f28be9", fontSize: 22 }}>{value}</strong>
+    </div>
+  );
+}
+
+const pageStyle: CSSProperties = {
+  minHeight: "100vh",
+  background: "#120d1b",
+  color: "white",
+  padding: 25,
+  fontFamily: "Arial, sans-serif",
+};
+
+const sectionStyle: CSSProperties = {
+  background: "#21172d",
+  padding: 22,
+  borderRadius: 16,
+  margin: "25px 0",
+};
+
+const statsGrid: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+  gap: 12,
+};
+
+const statStyle: CSSProperties = {
+  background: "#281b35",
+  padding: 18,
+  borderRadius: 14,
+};
+
+const orderStyle: CSSProperties = {
+  background: "#281b35",
+  borderRadius: 14,
+  padding: 18,
+  marginBottom: 14,
+};
+
+const inputStyle: CSSProperties = {
+  display: "block",
+  width: "100%",
+  boxSizing: "border-box",
+  padding: 13,
+  margin: "8px 0 18px",
+  borderRadius: 9,
+  border: "1px solid #654879",
+  background: "#160f20",
+  color: "white",
+  fontSize: 16,
+};
+
+const buttonStyle: CSSProperties = {
+  display: "block",
+  width: "100%",
+  padding: 14,
+  marginTop: 14,
+  border: 0,
+  borderRadius: 10,
+  background: "#b832a8",
+  color: "white",
+  fontSize: 16,
+  fontWeight: "bold",
+  cursor: "pointer",
+};
